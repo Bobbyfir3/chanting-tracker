@@ -4,6 +4,8 @@ import base64
 import csv
 import json
 import os
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -95,8 +97,8 @@ def ensure_local_storage() -> None:
             writer = csv.DictWriter(csvfile, fieldnames=CSV_HEADERS)
             writer.writeheader()
 
-    if not SETTINGS_FILE.exists():
-        SETTINGS_FILE.write_text(json.dumps({"photo_data_url": ""}, ensure_ascii=False, indent=2), encoding="utf-8")
+    if not SETTINGS_FILE.exists() or SETTINGS_FILE.read_text(encoding='utf-8').strip() == "":
+        SETTINGS_FILE.write_text(json.dumps({"photo_data_url": "", "telegram_token": "", "telegram_chat_id": "", "telegram_auto_send": False}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_local_chants() -> List[str]:
@@ -277,7 +279,11 @@ class Storage:
         settings = self.load_settings()
         settings["photo_data_url"] = photo_data_url
         save_local_settings(settings)
-
+    def save_settings(self, settings: dict) -> None:
+        if self.client is not None:
+            # TODO: implement remote settings support
+            return
+        save_local_settings(settings)
 
 def parse_iso_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
@@ -431,6 +437,36 @@ def render_chant_summary(summary: Dict[str, object]) -> None:
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
+def build_telegram_text(summary: Dict[str, object]) -> str:
+    return (
+        f"Chanting Summary:\n"
+        f"Total practice days: {summary['total_practice_days']}\n"
+        f"Current streak: {summary['current_streak']}\n"
+        f"Total entries: {summary['total_entries']}\n"
+        f"Total duration: {format_minutes(int(summary['total_minutes']))}\n"
+    )
+
+
+def send_telegram_message(bot_token: str, chat_id: str, text: str) -> bool:
+    if not bot_token or not chat_id or not text:
+        return False
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            content = resp.read().decode("utf-8")
+            return "\"ok\":true" in content
+    except Exception:
+        return False
+
+
 def render_month_summary(summary: Dict[str, object]) -> None:
     st.subheader("Monthly Summary")
     month_summary = summary["by_month"]
@@ -483,6 +519,28 @@ def main() -> None:
         else:
             st.caption("Using shared Supabase data.")
 
+        st.divider()
+        st.header("Telegram Settings")
+        telegram_token = st.text_input("Telegram Bot Token", settings.get("telegram_token", ""), type="password")
+        telegram_chat_id = st.text_input("Telegram Chat ID", settings.get("telegram_chat_id", ""))
+        telegram_auto_send = st.checkbox("Auto-send summary after each log", value=settings.get("telegram_auto_send", False))
+
+        if st.button("Save Telegram Settings", use_container_width=True):
+            settings["telegram_token"] = telegram_token.strip()
+            settings["telegram_chat_id"] = telegram_chat_id.strip()
+            settings["telegram_auto_send"] = bool(telegram_auto_send)
+            storage.save_settings(settings)
+            st.success("Telegram settings saved.")
+            st.experimental_rerun()
+
+        if st.button("Send summary now to Telegram", use_container_width=True):
+            message = build_telegram_text(summary)
+            sent = send_telegram_message(telegram_token.strip(), telegram_chat_id.strip(), message)
+            if sent:
+                st.success("Telegram summary sent.")
+            else:
+                st.error("Failed to send Telegram message. Check token/chat_id.")
+
     if not chants:
         st.error("No chant items found. Add one in data/chants.json or the database to get started.")
         st.stop()
@@ -520,6 +578,15 @@ def main() -> None:
             )
             storage.save_log(log)
             st.success("Chant log saved.")
+
+            if settings.get("telegram_auto_send") and settings.get("telegram_token") and settings.get("telegram_chat_id"):
+                message = build_telegram_text(build_summary(storage.load_logs()))
+                sent = send_telegram_message(settings.get("telegram_token"), settings.get("telegram_chat_id"), message)
+                if sent:
+                    st.success("Auto-sent Telegram summary.")
+                else:
+                    st.warning("Auto-send Telegram failed. Check settings.")
+
             st.rerun()
 
     tab1, tab2, tab3 = st.tabs(["History", "By Chant", "By Month"])
