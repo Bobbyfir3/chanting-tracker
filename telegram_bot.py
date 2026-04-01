@@ -89,6 +89,24 @@ def ensure_runtime_files() -> None:
 
 	if not CHANTS_FILE.exists():
 		CHANTS_FILE.write_text(json.dumps({"chants": DEFAULT_CHANTS}, ensure_ascii=False, indent=2), encoding="utf-8")
+	else:
+		try:
+			payload = json.loads(CHANTS_FILE.read_text(encoding="utf-8-sig"))
+		except json.JSONDecodeError:
+			payload = {"chants": []}
+
+		existing = payload.get("chants", [])
+		if not isinstance(existing, list):
+			existing = []
+
+		normalized_existing = {str(item).strip() for item in existing if str(item).strip()}
+		updated = list(existing)
+		for chant in DEFAULT_CHANTS:
+			if chant not in normalized_existing:
+				updated.append(chant)
+
+		if len(updated) != len(existing):
+			CHANTS_FILE.write_text(json.dumps({"chants": updated}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 	if not SETTINGS_FILE.exists():
 		SETTINGS_FILE.write_text(
