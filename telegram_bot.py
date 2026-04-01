@@ -76,6 +76,7 @@ DEFAULT_CHANTS: List[str] = [
 	"高王觀世音經",
 	"觀世音菩薩普門品",
 	"安土地真言",
+	"佛说安宅陀罗尼咒",
 	"不動明王 心咒",
 	"真佛经",
 	"佛说安宅陀罗尼咒经",
@@ -442,6 +443,8 @@ def parse_log_text(text: str, chant_list: List[str]) -> Optional[dict]:
 	if not content:
 		return None
 
+	if content.lower().startswith("chant "):
+		content = content[6:].strip()
 	if content.lower().startswith("log "):
 		content = content[4:].strip()
 	if content.lower().startswith("/log "):
