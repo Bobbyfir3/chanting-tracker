@@ -39,7 +39,7 @@ CSV_HEADERS = ["entry_id", "date", "chant_name", "count", "unit", "duration_minu
 RITUAL_PACKAGES: Dict[str, List[Tuple[str, int]]] = {
 	"1": [
 		("真佛经", 1),
-		("佛说安宅陀罗尼咒经", 1),
+		("佛说安宅陀罗尼咒经", 21),
 		("佛說摩利支天經", 1),
 		("高王觀世音經", 1),
 		("莲花童子心咒", 108),
