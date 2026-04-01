@@ -1043,7 +1043,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 
 		parsed = parse_log_text(text, chant_list)
 		if not parsed:
-			send_message(token, chat_id, "I could not understand that message. Please try again.")
+			send_message(token, chat_id, "i could not understand that message, please /start to see the list of command.")
 			return
 
 		record = save_log(parsed["chant_name"], parsed["count"], "telegram-text", parsed.get("date"))
