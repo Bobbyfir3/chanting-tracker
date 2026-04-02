@@ -39,7 +39,8 @@ CSV_HEADERS = ["entry_id", "date", "chant_name", "count", "unit", "duration_minu
 RITUAL_PACKAGES: Dict[str, List[Tuple[str, int]]] = {
 	"1": [
 		("真佛经", 1),
-		("佛说安宅陀罗尼咒经", 21),
+		("佛说安宅陀罗尼咒经", 1),
+		("佛说安宅陀罗尼咒", 21),
 		("佛說摩利支天經", 1),
 		("高王觀世音經", 1),
 		("莲花童子心咒", 108),
@@ -54,6 +55,7 @@ RITUAL_PACKAGES: Dict[str, List[Tuple[str, int]]] = {
 
 CHANT_ALIASES: Dict[str, str] = {
 	"佛说安宅陀罗尼咒经": "佛說安宅陀羅尼咒經",
+	"佛说安宅陀罗尼咒": "佛說安宅陀羅尼咒",
 	"佛说摩利支天经": "佛說摩利支天經",
 	"莲花童子心咒": "蓮花童子心咒",
 }
@@ -91,24 +93,6 @@ def ensure_runtime_files() -> None:
 
 	if not CHANTS_FILE.exists():
 		CHANTS_FILE.write_text(json.dumps({"chants": DEFAULT_CHANTS}, ensure_ascii=False, indent=2), encoding="utf-8")
-	else:
-		try:
-			payload = json.loads(CHANTS_FILE.read_text(encoding="utf-8-sig"))
-		except json.JSONDecodeError:
-			payload = {"chants": []}
-
-		existing = payload.get("chants", [])
-		if not isinstance(existing, list):
-			existing = []
-
-		normalized_existing = {str(item).strip() for item in existing if str(item).strip()}
-		updated = list(existing)
-		for chant in DEFAULT_CHANTS:
-			if chant not in normalized_existing:
-				updated.append(chant)
-
-		if len(updated) != len(existing):
-			CHANTS_FILE.write_text(json.dumps({"chants": updated}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 	if not SETTINGS_FILE.exists():
 		SETTINGS_FILE.write_text(
@@ -416,36 +400,11 @@ def apply_ritual_package(package_key: str, chant_list: List[str], source_note: s
 	return records
 
 
-def parse_package_command(compact_cmd: str) -> Optional[Tuple[str, int, str]]:
-	# Support natural variants for package add/reverse commands.
-	add_match = re.fullmatch(
-		r"(?:/?\+\s*|/?add\s*|/?log\s*|/?)(morning|night)",
-		compact_cmd,
-	)
-	if add_match:
-		period = add_match.group(1)
-		package_key = "1" if period == "morning" else "2"
-		return package_key, 1, f"telegram-package:+{period}"
-
-	reverse_match = re.fullmatch(
-		r"(?:/?(?:delete|remove|reverse|undo)\s+|/?-\s*)(morning|night)",
-		compact_cmd,
-	)
-	if reverse_match:
-		period = reverse_match.group(1)
-		package_key = "1" if period == "morning" else "2"
-		return package_key, -1, f"telegram-package:delete-{period}"
-
-	return None
-
-
 def parse_log_text(text: str, chant_list: List[str]) -> Optional[dict]:
 	content = text.strip()
 	if not content:
 		return None
 
-	if content.lower().startswith("chant "):
-		content = content[6:].strip()
 	if content.lower().startswith("log "):
 		content = content[4:].strip()
 	if content.lower().startswith("/log "):
@@ -495,9 +454,6 @@ def register_commands(token: str) -> None:
 	commands = [
 		{"command": "start", "description": "Show start menu"},
 		{"command": "myid", "description": "Show this chat ID"},
-		{"command": "morning", "description": "Add morning ritual package"},
-		{"command": "night", "description": "Add night ritual package"},
-		{"command": "reverse", "description": "Reverse package: /reverse morning or /reverse night"},
 		{"command": "summary", "description": "Show chant totals"},
 		{"command": "week", "description": "Show past 7 days"},
 		{"command": "month", "description": "Show this month totals"},
@@ -738,11 +694,9 @@ def build_commands_text() -> str:
 		"Summaries:\n"
 		"- summary\n- week\n- month\n- year\n\n"
 		"Ritual packages:\n"
-		"- +morning, /morning, morning\n"
-		"- +night, /night, night\n"
-		"- Delete Morning / Reverse Morning\n"
-		"- Delete Night / Reverse Night\n"
-		"- /reverse morning\n- /reverse night\n\n"
+		"- +morning\n- +night\n"
+		"- morning -1 (reverse morning)\n- night -1 (reverse night)\n"
+		"- Delete Morning\n- Delete Night\n\n"
 		"Delete / undo:\n"
 		"- /delete 不動明王心咒 7\n"
 		"- /delete\n"
@@ -766,7 +720,7 @@ def process_callback_query(token: str, callback_query: dict, chant_list: List[st
 		chant_name = pick_chant_name(picked, chant_list)
 		if not chant_name:
 			answer_callback(token, callback_query_id, "Chant not found")
-			send_message(token, chat_id, "I could not match that chant. Please try again from the chant list.")
+			send_message(token, chat_id, "Could not match that chant. Please send /chants again.")
 			return
 
 		set_pending_chant(chat_id, chant_name)
@@ -814,7 +768,7 @@ def process_callback_query(token: str, callback_query: dict, chant_list: List[st
 			"Example:\n"
 			"Chant: 佛說安宅陀羅尼咒經\n"
 			"Grouping: Home Protection Set\n"
-			"Include: 佛說安宅陀羅尼咒經, 往生咒, 蓮花童子心咒\n\n"
+			"Include: 佛說安宅陀羅尼咒經, 佛說安宅陀羅尼咒, 往生咒, 蓮花童子心咒\n\n"
 			"After you send it, I will forward to admin for manual update.",
 		)
 		return
@@ -974,17 +928,51 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			send_message(token, chat_id, "Your custom chant request was sent. Admin will update it manually.")
 			return
 
-		package_command = parse_package_command(compact_cmd)
-		if package_command:
-			package_key, multiplier, source_note = package_command
+		add_package_match = re.fullmatch(r"\+\s*(morning|night)", compact_cmd)
+		if add_package_match:
+			package_key = "1" if add_package_match.group(1) == "morning" else "2"
 			package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
-			records = apply_ritual_package(package_key, chant_list, source_note, multiplier=multiplier)
-			if not records:
-				send_message(token, chat_id, "Package not found. Try /morning or /night.")
-				return
+			records = apply_ritual_package(package_key, chant_list, f"telegram-package:+{add_package_match.group(1)}", multiplier=1)
 			set_last_saved_entry(chat_id, records[-1]["entry_id"])
-			header = f"Saved {package_name}:" if multiplier > 0 else f"Applied reverse for {package_name}:"
-			lines = [header]
+			lines = [f"Saved {package_name}:"]
+			for item in records:
+				lines.append(f"- {item['chant_name']} x {item['count']}遍")
+			send_message(token, chat_id, "\n".join(lines))
+			return
+
+		delete_package_match = re.fullmatch(r"delete(?:\s*[-:]\s*|\s+)(morning|night)", compact_cmd)
+		if delete_package_match:
+			package_key = "1" if delete_package_match.group(1) == "morning" else "2"
+			package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
+			records = apply_ritual_package(package_key, chant_list, f"telegram-package:delete-{delete_package_match.group(1)}", multiplier=-1)
+			set_last_saved_entry(chat_id, records[-1]["entry_id"])
+			lines = [f"Applied reverse for {package_name}:"]
+			for item in records:
+				lines.append(f"- {item['chant_name']} x {item['count']}遍")
+			send_message(token, chat_id, "\n".join(lines))
+			return
+
+		signed_package_match = re.fullmatch(r"(morning|night)\s*(?:[x×]\s*)?(-?[\d,]+)", compact_cmd)
+		if signed_package_match:
+			package_label = signed_package_match.group(1)
+			multiplier = int(signed_package_match.group(2).replace(",", ""))
+			if multiplier == 0:
+				send_message(token, chat_id, "Multiplier cannot be 0. Try morning 1 or morning -1")
+				return
+
+			package_key = "1" if package_label == "morning" else "2"
+			package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
+			records = apply_ritual_package(
+				package_key,
+				chant_list,
+				f"telegram-package:{package_label}:{multiplier}",
+				multiplier=multiplier,
+			)
+			set_last_saved_entry(chat_id, records[-1]["entry_id"])
+			if multiplier > 0:
+				lines = [f"Saved {package_name} x {multiplier}:"]
+			else:
+				lines = [f"Applied reverse for {package_name} x {abs(multiplier)}:"]
 			for item in records:
 				lines.append(f"- {item['chant_name']} x {item['count']}遍")
 			send_message(token, chat_id, "\n".join(lines))
@@ -996,11 +984,11 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			count = int(delete_minus_match.group(2).replace(",", ""))
 			chant_name = pick_chant_name(raw_name, chant_list)
 			if not chant_name:
-				send_message(token, chat_id, "Chant not found. Please choose from the chant list.")
+				send_message(token, chat_id, f"Chant not found: {raw_name}")
 				return
 			record = save_log(chant_name, -count, "telegram-delete-minus")
 			set_last_saved_entry(chat_id, record["entry_id"])
-			send_message(token, chat_id, f"Saved minus: {chant_name} x -{count}遍")
+			send_message(token, chat_id, f"Saved minus: {chant_name} x -{count}遍\nentry_id: {record['entry_id']}")
 			return
 
 		if cmd in {"delete", "/delete", "undo", "/undo"} or cmd.startswith("/delete ") or cmd.startswith("delete "):
@@ -1012,11 +1000,11 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 				return
 			deleted = delete_log_by_entry_id(target_entry_id)
 			if not deleted:
-				send_message(token, chat_id, "Entry not found. Please try again.")
+				send_message(token, chat_id, f"Entry not found: {target_entry_id}")
 				return
 			if not explicit_entry_id:
 				clear_last_saved_entry(chat_id)
-			send_message(token, chat_id, f"Deleted: {deleted.get('chant_name', '')} x {deleted.get('count', '')}遍")
+			send_message(token, chat_id, f"Deleted: {deleted.get('chant_name', '')} x {deleted.get('count', '')}遍 ({deleted.get('entry_id', '')})")
 			return
 
 		if cmd in {"/chants", "chants", "/", "/all"}:
@@ -1044,7 +1032,13 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 
 		parsed = parse_log_text(text, chant_list)
 		if not parsed:
-			send_message(token, chat_id, "i could not understand that message, please /start to see the list of command.")
+			send_message(
+				token,
+				chat_id,
+				"Could not parse message. Try: 百字明咒 x 108\n"
+				"For ritual reverse, try: morning -1\n"
+				"Type /start for commands.",
+			)
 			return
 
 		record = save_log(parsed["chant_name"], parsed["count"], "telegram-text", parsed.get("date"))
@@ -1065,12 +1059,12 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 
 		transcript, transcribe_error = transcribe_voice(audio_bytes)
 		if not transcript:
-			send_message(token, chat_id, "Voice transcription is unavailable right now. Please send text instead.")
+			send_message(token, chat_id, f"Voice transcription not available. Reason: {transcribe_error or 'Unknown error'}")
 			return
 
 		parsed = parse_log_text(transcript, chant_list)
 		if not parsed:
-			send_message(token, chat_id, "I could not understand the voice format. Please send as text with chant and count.")
+			send_message(token, chat_id, f"Heard: {transcript}\nCould not parse. Please use: Chant Name x Count")
 			return
 
 		record = save_log(parsed["chant_name"], parsed["count"], "telegram-voice", parsed.get("date"))

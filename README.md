@@ -70,6 +70,28 @@ You have two options:
 1. Use the sidebar in the app and click `Add Chant Item`
 2. Edit `data/chants.json` directly and add a new chant name to the list
 
+## Telegram Ritual Packages
+
+The Telegram bot has two preset ritual packages defined in `telegram_bot.py` under `RITUAL_PACKAGES`.
+
+### Morning Chant Ritual
+
+1. 真佛经 x1
+2. 佛说安宅陀罗尼咒经 x1
+3. 佛说安宅陀罗尼咒 x21
+4. 佛說摩利支天經 x1
+5. 高王觀世音經 x1
+6. 莲花童子心咒 x108
+
+### Night Chant Ritual
+
+1. 真佛经 x1
+2. 佛說摩利支天經 x1
+3. 往生咒 x21
+4. 莲花童子心咒 x108
+
+If you want to change either preset later, edit `RITUAL_PACKAGES` in `telegram_bot.py`.
+
 ## Data Storage
 
 - `data/chants.json` stores your chant list
