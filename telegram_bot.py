@@ -163,6 +163,31 @@ def load_chants() -> List[str]:
 	return sorted({item.strip() for item in chants if item and item.strip()})
 
 
+def save_chants(chants: List[str]) -> None:
+	DATA_DIR.mkdir(parents=True, exist_ok=True)
+	normalized = sorted({item.strip() for item in chants if item and item.strip()})
+	CHANTS_FILE.write_text(json.dumps({"chants": normalized}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_owner_chat_id() -> str:
+	settings = load_settings()
+	return str(os.getenv("TELEGRAM_CHAT_ID") or settings.get("telegram_chat_id") or "").strip()
+
+
+def is_owner_chat(chat_id: int) -> bool:
+	owner_chat_id = get_owner_chat_id()
+	return bool(owner_chat_id) and str(chat_id) == owner_chat_id
+
+
+def add_chant(chant_name: str) -> Tuple[bool, List[str]]:
+	current = load_chants()
+	if chant_name in current:
+		return False, current
+	updated = current + [chant_name]
+	save_chants(updated)
+	return True, load_chants()
+
+
 def load_logs() -> List[dict]:
 	if not LOGS_FILE.exists():
 		return []
@@ -459,6 +484,7 @@ def register_commands(token: str) -> None:
 		{"command": "month", "description": "Show this month totals"},
 		{"command": "year", "description": "Show this year totals"},
 		{"command": "chants", "description": "Pick chant button"},
+		{"command": "addchant", "description": "Owner: add chant to list"},
 		{"command": "delete", "description": "Delete last or by entry_id"},
 	]
 	telegram_api(token, "setMyCommands", {"commands": json.dumps(commands, ensure_ascii=False)}, timeout=30)
@@ -916,6 +942,21 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 		if cmd in {"year", "/year", "yearly", "/yearly"}:
 			send_message(token, chat_id, build_period_summary_text("year"))
 			return
+		if compact_cmd.startswith("/addchant") or compact_cmd.startswith("addchant "):
+			if not is_owner_chat(chat_id):
+				send_message(token, chat_id, "This command is owner-only.")
+				return
+			parts = text.split(maxsplit=1)
+			if len(parts) < 2 or not parts[1].strip():
+				send_message(token, chat_id, "Usage: /addchant 金刚般若波罗蜜经")
+				return
+			chant_name = parts[1].strip()
+			created, updated_chants = add_chant(chant_name)
+			if created:
+				send_message(token, chat_id, f"Added chant: {chant_name}\nTotal chants: {len(updated_chants)}")
+			else:
+				send_message(token, chat_id, f"Chant already exists: {chant_name}")
+			return
 
 		if is_custom_request_pending(chat_id) and not text.startswith("/"):
 			requester_name = (
@@ -940,6 +981,8 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			send_message(token, chat_id, "\n".join(lines))
 			return
 
+		signed_package_match = re.fullmatch(r"(morning|night)\s*(?:[x×]\s*)?(-?[\d,]+)", compact_cmd)
+
 		delete_package_match = re.fullmatch(r"delete(?:\s*[-:]\s*|\s+)(morning|night)", compact_cmd)
 		if delete_package_match:
 			package_key = "1" if delete_package_match.group(1) == "morning" else "2"
@@ -952,7 +995,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			send_message(token, chat_id, "\n".join(lines))
 			return
 
-		signed_package_match = re.fullmatch(r"(morning|night)\s*(?:[x×]\s*)?(-?[\d,]+)", compact_cmd)
+			signed_package_match = re.fullmatch(r"(morning|night)\s*(?:[x×]\s*)?(-?[\d,]+)", compact_cmd)
 		if signed_package_match:
 			package_label = signed_package_match.group(1)
 			multiplier = int(signed_package_match.group(2).replace(",", ""))
