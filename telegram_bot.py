@@ -34,7 +34,7 @@ SECRETS_FILE = BASE_DIR / ".streamlit" / "secrets.toml"
 LOCK_FILE = DATA_DIR / "telegram_bot.lock"
 SEED_LOGS_FILE = BASE_DIR / "seed" / "chant_logs_seed.csv"
 
-CSV_HEADERS = ["entry_id", "date", "chant_name", "count", "unit", "duration_minutes", "notes", "created_at"]
+CSV_HEADERS = ["entry_id", "date", "chant_name", "count", "unit", "duration_minutes", "notes", "created_at", "chat_id"]
 
 RITUAL_PACKAGES: Dict[str, List[Tuple[str, int]]] = {
 	"1": [
@@ -188,20 +188,61 @@ def add_chant(chant_name: str) -> Tuple[bool, List[str]]:
 	return True, load_chants()
 
 
+def ensure_log_schema() -> None:
+	if not LOGS_FILE.exists():
+		return
+
+	with LOGS_FILE.open("r", newline="", encoding="utf-8-sig") as csvfile:
+		reader = csv.DictReader(csvfile)
+		fieldnames = list(reader.fieldnames or [])
+		rows = list(reader)
+
+	if fieldnames == CSV_HEADERS:
+		return
+
+	normalized_rows: List[dict] = []
+	for row in rows:
+		normalized_rows.append({key: row.get(key, "") for key in CSV_HEADERS})
+
+	with LOGS_FILE.open("w", newline="", encoding="utf-8-sig") as csvfile:
+		writer = csv.DictWriter(csvfile, fieldnames=CSV_HEADERS)
+		writer.writeheader()
+		writer.writerows(normalized_rows)
+
+
+def row_belongs_to_chat(row: dict, chat_id: int) -> bool:
+	row_chat_id = str(row.get("chat_id") or "").strip()
+	owner_chat_id = get_owner_chat_id()
+	target_chat_id = str(chat_id)
+	if row_chat_id:
+		return row_chat_id == target_chat_id
+	return bool(owner_chat_id) and target_chat_id == owner_chat_id
+
+
+def filter_logs_for_chat(logs: List[dict], chat_id: int) -> List[dict]:
+	return [row for row in logs if row_belongs_to_chat(row, chat_id)]
+
+
 def load_logs() -> List[dict]:
 	if not LOGS_FILE.exists():
 		return []
+	ensure_log_schema()
 	with LOGS_FILE.open("r", newline="", encoding="utf-8-sig") as csvfile:
 		reader = csv.DictReader(csvfile)
-		return list(reader)
+		rows = list(reader)
+	for row in rows:
+		row.setdefault("chat_id", "")
+	return rows
 
 
-def save_log(chant_name: str, count: int, source_note: str, log_date: Optional[str] = None) -> dict:
+def save_log(chant_name: str, count: int, source_note: str, log_date: Optional[str] = None, chat_id: Optional[int] = None) -> dict:
 	DATA_DIR.mkdir(parents=True, exist_ok=True)
 	if not LOGS_FILE.exists():
 		with LOGS_FILE.open("w", newline="", encoding="utf-8-sig") as csvfile:
 			writer = csv.DictWriter(csvfile, fieldnames=CSV_HEADERS)
 			writer.writeheader()
+	else:
+		ensure_log_schema()
 
 	target_date = log_date or date.today().isoformat()
 	now = datetime.now().isoformat(timespec="seconds")
@@ -216,6 +257,7 @@ def save_log(chant_name: str, count: int, source_note: str, log_date: Optional[s
 		"duration_minutes": 0,
 		"notes": source_note,
 		"created_at": now,
+		"chat_id": str(chat_id) if chat_id is not None else "",
 	}
 
 	with LOGS_FILE.open("a", newline="", encoding="utf-8-sig") as csvfile:
@@ -225,10 +267,11 @@ def save_log(chant_name: str, count: int, source_note: str, log_date: Optional[s
 	return record
 
 
-def delete_log_by_entry_id(entry_id: str) -> Optional[dict]:
+def delete_log_by_entry_id(entry_id: str, chat_id: int) -> Optional[dict]:
 	if not LOGS_FILE.exists():
 		return None
 
+	ensure_log_schema()
 	with LOGS_FILE.open("r", newline="", encoding="utf-8-sig") as csvfile:
 		reader = csv.DictReader(csvfile)
 		rows = list(reader)
@@ -236,7 +279,7 @@ def delete_log_by_entry_id(entry_id: str) -> Optional[dict]:
 	deleted: Optional[dict] = None
 	kept_rows: List[dict] = []
 	for row in rows:
-		if deleted is None and row.get("entry_id") == entry_id:
+		if deleted is None and row.get("entry_id") == entry_id and row_belongs_to_chat(row, chat_id):
 			deleted = row
 			continue
 		kept_rows.append(row)
@@ -252,8 +295,8 @@ def delete_log_by_entry_id(entry_id: str) -> Optional[dict]:
 	return deleted
 
 
-def build_summary_text() -> str:
-	logs = load_logs()
+def build_summary_text(chat_id: int) -> str:
+	logs = filter_logs_for_chat(load_logs(), chat_id)
 	if not logs:
 		return "No chant logs found yet."
 
@@ -274,8 +317,8 @@ def build_summary_text() -> str:
 	return "\n".join(lines)
 
 
-def build_weekly_summary_text(days: int = 7) -> str:
-	logs = load_logs()
+def build_weekly_summary_text(chat_id: int, days: int = 7) -> str:
+	logs = filter_logs_for_chat(load_logs(), chat_id)
 	if not logs:
 		return "No chant logs found yet."
 
@@ -332,8 +375,8 @@ def build_weekly_summary_text(days: int = 7) -> str:
 	return "\n".join(lines).strip()
 
 
-def build_period_summary_text(period: str) -> str:
-	logs = load_logs()
+def build_period_summary_text(chat_id: int, period: str) -> str:
+	logs = filter_logs_for_chat(load_logs(), chat_id)
 	if not logs:
 		return "No chant logs found yet."
 
@@ -412,7 +455,7 @@ def resolve_package_chant_name(raw_name: str, chant_list: List[str]) -> str:
 	return clean
 
 
-def apply_ritual_package(package_key: str, chant_list: List[str], source_note: str, multiplier: int = 1) -> List[dict]:
+def apply_ritual_package(package_key: str, chant_list: List[str], source_note: str, chat_id: int, multiplier: int = 1) -> List[dict]:
 	package = RITUAL_PACKAGES.get(package_key)
 	if not package:
 		return []
@@ -420,7 +463,7 @@ def apply_ritual_package(package_key: str, chant_list: List[str], source_note: s
 	records: List[dict] = []
 	for raw_name, base_count in package:
 		chant_name = resolve_package_chant_name(raw_name, chant_list)
-		record = save_log(chant_name, base_count * multiplier, source_note)
+		record = save_log(chant_name, base_count * multiplier, source_note, chat_id=chat_id)
 		records.append(record)
 	return records
 
@@ -756,19 +799,19 @@ def process_callback_query(token: str, callback_query: dict, chant_list: List[st
 
 	if data == "menu:summary":
 		answer_callback(token, callback_query_id, "Summary")
-		send_message(token, chat_id, build_summary_text())
+		send_message(token, chat_id, build_summary_text(chat_id))
 		return
 	if data == "menu:week":
 		answer_callback(token, callback_query_id, "Week")
-		send_message(token, chat_id, build_weekly_summary_text())
+		send_message(token, chat_id, build_weekly_summary_text(chat_id))
 		return
 	if data == "menu:month":
 		answer_callback(token, callback_query_id, "Month")
-		send_message(token, chat_id, build_period_summary_text("month"))
+		send_message(token, chat_id, build_period_summary_text(chat_id, "month"))
 		return
 	if data == "menu:year":
 		answer_callback(token, callback_query_id, "Year")
-		send_message(token, chat_id, build_period_summary_text("year"))
+		send_message(token, chat_id, build_period_summary_text(chat_id, "year"))
 		return
 	if data == "menu:commands":
 		answer_callback(token, callback_query_id, "Commands")
@@ -803,7 +846,7 @@ def process_callback_query(token: str, callback_query: dict, chant_list: List[st
 	if add_match:
 		package_key = add_match.group(1)
 		package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
-		records = apply_ritual_package(package_key, chant_list, f"telegram-package:+{'morning' if package_key == '1' else 'night'}", multiplier=1)
+		records = apply_ritual_package(package_key, chant_list, f"telegram-package:+{'morning' if package_key == '1' else 'night'}", chat_id=chat_id, multiplier=1)
 		set_last_saved_entry(chat_id, records[-1]["entry_id"])
 		lines = [f"Saved {package_name}:"]
 		for item in records:
@@ -816,7 +859,7 @@ def process_callback_query(token: str, callback_query: dict, chant_list: List[st
 	if sub_match:
 		package_key = sub_match.group(1)
 		package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
-		records = apply_ritual_package(package_key, chant_list, f"telegram-package:delete-{'morning' if package_key == '1' else 'night'}", multiplier=-1)
+		records = apply_ritual_package(package_key, chant_list, f"telegram-package:delete-{'morning' if package_key == '1' else 'night'}", chat_id=chat_id, multiplier=-1)
 		set_last_saved_entry(chat_id, records[-1]["entry_id"])
 		lines = [f"Applied reverse for {package_name}:"]
 		for item in records:
@@ -931,16 +974,16 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			send_message(token, chat_id, f"Your chat_id is: {chat_id}")
 			return
 		if cmd in {"summary", "/summary"}:
-			send_message(token, chat_id, build_summary_text())
+			send_message(token, chat_id, build_summary_text(chat_id))
 			return
 		if cmd in {"week", "/week", "daily", "/daily"}:
-			send_message(token, chat_id, build_weekly_summary_text())
+			send_message(token, chat_id, build_weekly_summary_text(chat_id))
 			return
 		if cmd in {"month", "/month", "monthly", "/monthly"}:
-			send_message(token, chat_id, build_period_summary_text("month"))
+			send_message(token, chat_id, build_period_summary_text(chat_id, "month"))
 			return
 		if cmd in {"year", "/year", "yearly", "/yearly"}:
-			send_message(token, chat_id, build_period_summary_text("year"))
+			send_message(token, chat_id, build_period_summary_text(chat_id, "year"))
 			return
 		if compact_cmd.startswith("/addchant") or compact_cmd.startswith("addchant "):
 			if not is_owner_chat(chat_id):
@@ -973,7 +1016,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 		if add_package_match:
 			package_key = "1" if add_package_match.group(1) == "morning" else "2"
 			package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
-			records = apply_ritual_package(package_key, chant_list, f"telegram-package:+{add_package_match.group(1)}", multiplier=1)
+			records = apply_ritual_package(package_key, chant_list, f"telegram-package:+{add_package_match.group(1)}", chat_id=chat_id, multiplier=1)
 			set_last_saved_entry(chat_id, records[-1]["entry_id"])
 			lines = [f"Saved {package_name}:"]
 			for item in records:
@@ -987,7 +1030,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 		if delete_package_match:
 			package_key = "1" if delete_package_match.group(1) == "morning" else "2"
 			package_name = "Morning Chant Ritual" if package_key == "1" else "Night Chant Ritual"
-			records = apply_ritual_package(package_key, chant_list, f"telegram-package:delete-{delete_package_match.group(1)}", multiplier=-1)
+			records = apply_ritual_package(package_key, chant_list, f"telegram-package:delete-{delete_package_match.group(1)}", chat_id=chat_id, multiplier=-1)
 			set_last_saved_entry(chat_id, records[-1]["entry_id"])
 			lines = [f"Applied reverse for {package_name}:"]
 			for item in records:
@@ -1009,6 +1052,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 				package_key,
 				chant_list,
 				f"telegram-package:{package_label}:{multiplier}",
+				chat_id=chat_id,
 				multiplier=multiplier,
 			)
 			set_last_saved_entry(chat_id, records[-1]["entry_id"])
@@ -1029,7 +1073,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			if not chant_name:
 				send_message(token, chat_id, f"Chant not found: {raw_name}")
 				return
-			record = save_log(chant_name, -count, "telegram-delete-minus")
+			record = save_log(chant_name, -count, "telegram-delete-minus", chat_id=chat_id)
 			set_last_saved_entry(chat_id, record["entry_id"])
 			send_message(token, chat_id, f"Saved minus: {chant_name} x -{count}遍\nentry_id: {record['entry_id']}")
 			return
@@ -1041,7 +1085,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			if not target_entry_id:
 				send_message(token, chat_id, "No entry selected to delete. Use /delete <entry_id> or save a new entry first.")
 				return
-			deleted = delete_log_by_entry_id(target_entry_id)
+			deleted = delete_log_by_entry_id(target_entry_id, chat_id)
 			if not deleted:
 				send_message(token, chat_id, f"Entry not found: {target_entry_id}")
 				return
@@ -1067,7 +1111,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 		pending_chant = get_pending_chant(chat_id)
 		if pending_chant and re.fullmatch(r"[\d,]+", text):
 			count = int(text.replace(",", ""))
-			record = save_log(pending_chant, count, "telegram-select")
+			record = save_log(pending_chant, count, "telegram-select", chat_id=chat_id)
 			pop_pending_chant(chat_id)
 			set_last_saved_entry(chat_id, record["entry_id"])
 			send_message(token, chat_id, f"Saved: {pending_chant} x {count}遍")
@@ -1084,7 +1128,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			)
 			return
 
-		record = save_log(parsed["chant_name"], parsed["count"], "telegram-text", parsed.get("date"))
+		record = save_log(parsed["chant_name"], parsed["count"], "telegram-text", parsed.get("date"), chat_id=chat_id)
 		set_last_saved_entry(chat_id, record["entry_id"])
 		send_message(token, chat_id, f"Saved: {parsed['chant_name']} x {parsed['count']}遍\nentry_id: {record['entry_id']}")
 		return
@@ -1110,7 +1154,7 @@ def process_message(token: str, message: dict, chant_list: List[str]) -> None:
 			send_message(token, chat_id, f"Heard: {transcript}\nCould not parse. Please use: Chant Name x Count")
 			return
 
-		record = save_log(parsed["chant_name"], parsed["count"], "telegram-voice", parsed.get("date"))
+		record = save_log(parsed["chant_name"], parsed["count"], "telegram-voice", parsed.get("date"), chat_id=chat_id)
 		set_last_saved_entry(chat_id, record["entry_id"])
 		send_message(token, chat_id, f"Heard: {transcript}\nSaved: {parsed['chant_name']} x {parsed['count']}遍\nentry_id: {record['entry_id']}")
 
